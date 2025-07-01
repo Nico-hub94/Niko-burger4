@@ -1,0 +1,605 @@
+# CÓDIGO COMPLETO - SISTEMA NIKO BURGER
+
+## 1. Archivo: client/src/lib/whatsapp.ts
+```typescript
+import type { CartItem, CustomerInfo } from '@shared/schema';
+
+// WhatsApp business number for NIKO BURGER Paraguay
+const WHATSAPP_NUMBER = import.meta.env.VITE_WHATSAPP_NUMBER || '595972157725';
+
+export function sendWhatsAppOrder(
+  cart: CartItem[],
+  customerInfo: CustomerInfo,
+  total: number,
+  includeDelivery?: boolean,
+  deliveryLocation?: {lat: number, lng: number, address: string} | null
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    try {
+      // Format order message
+      let message = `🍔 *NUEVO PEDIDO - NIKO BURGER* 🍔\n\n`;
+      message += `👤 *Cliente:* ${customerInfo.name}\n`;
+      message += `📱 *Teléfono:* ${customerInfo.phone}\n\n`;
+      message += `📋 *Pedido:*\n`;
+      
+      cart.forEach(item => {
+        message += `• ${item.name} x${item.quantity} - ₲${(item.price * item.quantity).toLocaleString()}\n`;
+      });
+      
+      if (includeDelivery) {
+        message += `• 🚚 Servicio de Delivery x1 - ₲5.000\n`;
+      }
+      
+      message += `\n💰 *Total: ₲${total.toLocaleString()}*\n`;
+      
+      if (includeDelivery) {
+        message += `🚚 *Incluye delivery a domicilio*\n`;
+        if (deliveryLocation) {
+          message += `📍 *Dirección:* ${deliveryLocation.address}\n`;
+          message += `🗺️ *Coordenadas:* ${deliveryLocation.lat.toFixed(6)}, ${deliveryLocation.lng.toFixed(6)}\n`;
+          message += `🔗 *Ver en mapa:* https://maps.google.com/?q=${deliveryLocation.lat},${deliveryLocation.lng}\n`;
+        }
+      } else {
+        message += `🏃‍♂️ *Retiro en local*\n`;
+      }
+      
+      if (customerInfo.notes && customerInfo.notes.trim()) {
+        message += `\n📝 *Notas:* ${customerInfo.notes}`;
+      }
+      
+      message += `\n\n¡Gracias por elegir NIKO BURGER! 🔥`;
+
+      // Create WhatsApp URL
+      const whatsappURL = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(message)}`;
+      
+      // Open WhatsApp in new window/tab
+      const newWindow = window.open(whatsappURL, '_blank');
+      
+      if (newWindow) {
+        resolve();
+      } else {
+        // If popup was blocked, try direct navigation
+        window.location.href = whatsappURL;
+        resolve();
+      }
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+```
+
+## 2. Archivo: client/src/components/hero-section.tsx
+```typescript
+export default function HeroSection() {
+  return null;
+}
+```
+
+## 3. Archivo: client/src/components/location-picker.tsx
+```typescript
+import { useEffect, useRef, useState } from "react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+import { MapPin, X, Crosshair } from "lucide-react";
+import { Button } from "@/components/ui/button";
+
+// Fix for default markers in Leaflet
+delete (L.Icon.Default.prototype as any)._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
+  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
+  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+});
+
+interface LocationPickerProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onLocationSelect: (lat: number, lng: number, address: string) => void;
+}
+
+export default function LocationPicker({ isOpen, onClose, onLocationSelect }: LocationPickerProps) {
+  const mapRef = useRef<HTMLDivElement>(null);
+  const mapInstance = useRef<L.Map | null>(null);
+  const markerRef = useRef<L.Marker | null>(null);
+  const [selectedLocation, setSelectedLocation] = useState<{lat: number, lng: number, address: string} | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    if (isOpen && mapRef.current && !mapInstance.current) {
+      // Initialize map centered on Paraguay
+      mapInstance.current = L.map(mapRef.current).setView([-23.4425, -58.4438], 7);
+      
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+      }).addTo(mapInstance.current);
+
+      // Add click handler
+      mapInstance.current.on('click', async (e) => {
+        const { lat, lng } = e.latlng;
+        
+        // Remove existing marker
+        if (markerRef.current) {
+          mapInstance.current?.removeLayer(markerRef.current);
+        }
+        
+        // Add new marker
+        markerRef.current = L.marker([lat, lng]).addTo(mapInstance.current!);
+        
+        setIsLoading(true);
+        try {
+          // Get address from coordinates (reverse geocoding)  
+          const response = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&accept-language=es&countrycodes=py`
+          );
+          const data = await response.json();
+          const address = data.display_name || `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+          
+          setSelectedLocation({ lat, lng, address });
+        } catch (error) {
+          console.log('Error getting address:', error);
+          setSelectedLocation({ 
+            lat, 
+            lng, 
+            address: `${lat.toFixed(6)}, ${lng.toFixed(6)}` 
+          });
+        }
+        setIsLoading(false);
+      });
+
+      // Automatically get user's current location
+      getUserLocation();
+    }
+  }, [isOpen]);
+
+  const getUserLocation = () => {
+    if (navigator.geolocation) {
+      setIsLoading(true);
+      navigator.geolocation.getCurrentPosition(
+        async (position) => {
+          const { latitude, longitude } = position.coords;
+          
+          // Center map on user location with high zoom
+          mapInstance.current?.setView([latitude, longitude], 15);
+          
+          // Remove existing marker
+          if (markerRef.current) {
+            mapInstance.current?.removeLayer(markerRef.current);
+          }
+          
+          // Add marker at user location
+          markerRef.current = L.marker([latitude, longitude]).addTo(mapInstance.current!);
+          
+          try {
+            // Get address from coordinates with Paraguay focus
+            const response = await fetch(
+              `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&accept-language=es&countrycodes=py&zoom=18&addressdetails=1`
+            );
+            const data = await response.json();
+            
+            // Build better address format for Paraguay
+            let address = '';
+            if (data.address) {
+              const parts = [];
+              if (data.address.road) parts.push(data.address.road);
+              if (data.address.house_number) parts.push(data.address.house_number);
+              if (data.address.suburb || data.address.neighbourhood) parts.push(data.address.suburb || data.address.neighbourhood);
+              if (data.address.city || data.address.town || data.address.village) parts.push(data.address.city || data.address.town || data.address.village);
+              if (data.address.state) parts.push(data.address.state);
+              
+              address = parts.length > 0 ? parts.join(', ') : data.display_name;
+            } else {
+              address = data.display_name || `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+            }
+            
+            setSelectedLocation({ lat: latitude, lng: longitude, address });
+          } catch (error) {
+            console.log('Error getting address:', error);
+            setSelectedLocation({ 
+              lat: latitude, 
+              lng: longitude, 
+              address: `Coordenadas: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}` 
+            });
+          }
+          setIsLoading(false);
+        },
+        (error) => {
+          console.log('Error getting location:', error);
+          setIsLoading(false);
+          // If user denies location, center on Paraguay
+          mapInstance.current?.setView([-23.4425, -58.4438], 7);
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 15000,
+          maximumAge: 60000
+        }
+      );
+    } else {
+      console.log('Geolocation not supported');
+      setIsLoading(false);
+    }
+  };
+
+  // Cleanup map on unmount
+  useEffect(() => {
+    return () => {
+      if (mapInstance.current) {
+        mapInstance.current.remove();
+        mapInstance.current = null;
+      }
+    };
+  }, []);
+
+  // Reset state when modal closes
+  useEffect(() => {
+    if (!isOpen) {
+      setSelectedLocation(null);
+      setIsLoading(false);
+      if (mapInstance.current) {
+        mapInstance.current.remove();
+        mapInstance.current = null;
+      }
+    }
+  }, [isOpen]);
+
+  const handleConfirmLocation = () => {
+    if (selectedLocation) {
+      onLocationSelect(selectedLocation.lat, selectedLocation.lng, selectedLocation.address);
+      onClose();
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl w-full max-w-md h-96 flex flex-col">
+        <div className="p-4 border-b">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center space-x-2">
+              <MapPin className="w-5 h-5 text-brand-red" />
+              <h3 className="font-semibold">Selecciona tu ubicación</h3>
+            </div>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+          <button
+            onClick={getUserLocation}
+            className="w-full flex items-center justify-center space-x-2 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+          >
+            <Crosshair className="w-4 h-4" />
+            <span>Usar mi ubicación actual</span>
+          </button>
+        </div>
+        
+        <div className="flex-1 relative">
+          <div ref={mapRef} className="absolute inset-0 z-0" />
+          {isLoading && (
+            <div className="absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center z-10">
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-red mx-auto mb-2"></div>
+                <p className="text-sm text-gray-600">Obteniendo ubicación...</p>
+              </div>
+            </div>
+          )}
+        </div>
+        
+        {selectedLocation && (
+          <div className="p-4 border-t">
+            <div className="mb-3">
+              <p className="text-sm font-medium text-gray-800 mb-1">📍 Ubicación seleccionada:</p>
+              <p className="text-xs text-gray-600 break-words">{selectedLocation.address}</p>
+            </div>
+            <div className="space-y-2">
+              <Button
+                onClick={handleConfirmLocation}
+                className="w-full bg-brand-red hover:bg-brand-red-dark text-white"
+              >
+                ✓ Confirmar esta ubicación
+              </Button>
+              <p className="text-xs text-gray-500 text-center">
+                O toca en otro punto del mapa para cambiarla
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+```
+
+## 4. Archivo: server/storage.ts
+```typescript
+import { menuItems, orders, type MenuItem, type Order, type InsertOrder } from "@shared/schema";
+import { db } from "./db";
+import { eq } from "drizzle-orm";
+
+export interface IStorage {
+  // Menu items
+  getMenuItems(): Promise<MenuItem[]>;
+  getMenuItemsByCategory(category: string): Promise<MenuItem[]>;
+  
+  // Orders
+  createOrder(order: InsertOrder): Promise<Order>;
+  getOrder(id: number): Promise<Order | undefined>;
+}
+
+export class MemStorage implements IStorage {
+  private menuItems: Map<number, MenuItem>;
+  private orders: Map<number, Order>;
+  private currentMenuId: number;
+  private currentOrderId: number;
+
+  constructor() {
+    this.menuItems = new Map();
+    this.orders = new Map();
+    this.currentMenuId = 1;
+    this.currentOrderId = 1;
+    this.initializeMenuItems();
+  }
+
+  private initializeMenuItems() {
+    const items: MenuItem[] = [
+      // Hamburguesas
+      {
+        id: this.currentMenuId++,
+        name: "Cheese Simple",
+        description: "Pan casero, carne 150g, queso, lechuga, tomate",
+        price: 10000,
+        category: "hamburguesas",
+        imageUrl: "/attached_assets/20250130_031319_1751398756985.jpg"
+      },
+      {
+        id: this.currentMenuId++,
+        name: "Cheese Doble",
+        description: "Pan casero, doble carne 300g, doble queso, lechuga, tomate",
+        price: 15000,
+        category: "hamburguesas",
+        imageUrl: "/attached_assets/20250130_031448_1751398756972.jpg"
+      },
+      {
+        id: this.currentMenuId++,
+        name: "Hambur Completa Simple",
+        description: "Pan casero, carne 150g, queso, lechuga, tomate, cebolla, huevo",
+        price: 15000,
+        category: "hamburguesas",
+        imageUrl: "/attached_assets/20250130_031625_1751398756952.jpg"
+      },
+      {
+        id: this.currentMenuId++,
+        name: "Hambur Completa Doble",
+        description: "Pan casero, doble carne 300g, doble queso, lechuga, tomate, cebolla, huevo",
+        price: 20000,
+        category: "hamburguesas",
+        imageUrl: "/attached_assets/20250130_031656_1751398756964.jpg"
+      },
+      {
+        id: this.currentMenuId++,
+        name: "Tata Burger Simple",
+        description: "Pan casero, carne 150g, queso, lechuga, tomate, cebolla, huevo, bacon",
+        price: 20000,
+        category: "hamburguesas",
+        imageUrl: "/attached_assets/Screenshot_20241108_184410_WhatsApp_1751398756991.jpg"
+      },
+      {
+        id: this.currentMenuId++,
+        name: "Tata Burger Doble",
+        description: "Pan casero, doble carne 300g, doble queso, lechuga, tomate, cebolla, huevo, bacon",
+        price: 25000,
+        category: "hamburguesas",
+        imageUrl: "/attached_assets/Screenshot_20241108_184410_WhatsApp_1751398756991.jpg"
+      },
+      // Acompañamientos
+      {
+        id: this.currentMenuId++,
+        name: "Papas Fritas",
+        description: "Porción mediana de papas fritas caseras",
+        price: 5000,
+        category: "acompañamientos",
+        imageUrl: "/api/placeholder/300/200"
+      },
+      {
+        id: this.currentMenuId++,
+        name: "Papas Fritas Grande",
+        description: "Porción grande de papas fritas caseras",
+        price: 10000,
+        category: "acompañamientos",
+        imageUrl: "/api/placeholder/300/200"
+      },
+      // Bebidas
+      {
+        id: this.currentMenuId++,
+        name: "Coca Personal",
+        description: "Coca Cola 350ml",
+        price: 4000,
+        category: "bebidas",
+        imageUrl: "/api/placeholder/300/200"
+      },
+      {
+        id: this.currentMenuId++,
+        name: "Coca de Medio",
+        description: "Coca Cola 500ml",
+        price: 6000,
+        category: "bebidas",
+        imageUrl: "/api/placeholder/300/200"
+      }
+    ];
+
+    items.forEach(item => {
+      this.menuItems.set(item.id, item);
+    });
+  }
+
+  async getMenuItems(): Promise<MenuItem[]> {
+    return Array.from(this.menuItems.values());
+  }
+
+  async getMenuItemsByCategory(category: string): Promise<MenuItem[]> {
+    return Array.from(this.menuItems.values()).filter(item => item.category === category);
+  }
+
+  async createOrder(insertOrder: InsertOrder): Promise<Order> {
+    const id = this.currentOrderId++;
+    const order: Order = {
+      id,
+      customerName: insertOrder.customerName,
+      customerPhone: insertOrder.customerPhone,
+      notes: insertOrder.notes || null,
+      items: insertOrder.items,
+      total: insertOrder.total,
+      status: "pending",
+      deliveryLocation: insertOrder.deliveryLocation || null
+    };
+    this.orders.set(id, order);
+    return order;
+  }
+
+  async getOrder(id: number): Promise<Order | undefined> {
+    return this.orders.get(id);
+  }
+}
+
+export class DatabaseStorage implements IStorage {
+  async getMenuItems(): Promise<MenuItem[]> {
+    const existingItems = await db.select().from(menuItems);
+    
+    if (existingItems.length === 0) {
+      await this.initializeMenuItems();
+      return await db.select().from(menuItems);
+    }
+    
+    return existingItems;
+  }
+
+  async getMenuItemsByCategory(category: string): Promise<MenuItem[]> {
+    return await db.select().from(menuItems).where(eq(menuItems.category, category));
+  }
+
+  async createOrder(insertOrder: InsertOrder): Promise<Order> {
+    const [order] = await db
+      .insert(orders)
+      .values({
+        ...insertOrder,
+        status: "pending"
+      })
+      .returning();
+    return order;
+  }
+
+  async getOrder(id: number): Promise<Order | undefined> {
+    const [order] = await db.select().from(orders).where(eq(orders.id, id));
+    return order || undefined;
+  }
+
+  private async initializeMenuItems() {
+    const items = [
+      // Hamburguesas
+      {
+        name: "Cheese Simple",
+        description: "Pan casero, carne 150g, queso, lechuga, tomate",
+        price: 10000,
+        category: "hamburguesas",
+        imageUrl: "/attached_assets/20250130_031319_1751398756985.jpg"
+      },
+      {
+        name: "Cheese Doble",
+        description: "Pan casero, doble carne 300g, doble queso, lechuga, tomate",
+        price: 15000,
+        category: "hamburguesas",
+        imageUrl: "/attached_assets/20250130_031448_1751398756972.jpg"
+      },
+      {
+        name: "Hambur Completa Simple",
+        description: "Pan casero, carne 150g, queso, lechuga, tomate, cebolla, huevo",
+        price: 15000,
+        category: "hamburguesas",
+        imageUrl: "/attached_assets/20250130_031625_1751398756952.jpg"
+      },
+      {
+        name: "Hambur Completa Doble",
+        description: "Pan casero, doble carne 300g, doble queso, lechuga, tomate, cebolla, huevo",
+        price: 20000,
+        category: "hamburguesas",
+        imageUrl: "/attached_assets/20250130_031656_1751398756964.jpg"
+      },
+      {
+        name: "Tata Burger Simple",
+        description: "Pan casero, carne 150g, queso, lechuga, tomate, cebolla, huevo, bacon",
+        price: 20000,
+        category: "hamburguesas",
+        imageUrl: "/attached_assets/Screenshot_20241108_184410_WhatsApp_1751398756991.jpg"
+      },
+      {
+        name: "Tata Burger Doble",
+        description: "Pan casero, doble carne 300g, doble queso, lechuga, tomate, cebolla, huevo, bacon",
+        price: 25000,
+        category: "hamburguesas",
+        imageUrl: "/attached_assets/Screenshot_20241108_184410_WhatsApp_1751398756991.jpg"
+      },
+      // Acompañamientos
+      {
+        name: "Papas Fritas",
+        description: "Porción mediana de papas fritas caseras",
+        price: 5000,
+        category: "acompañamientos",
+        imageUrl: "/api/placeholder/300/200"
+      },
+      {
+        name: "Papas Fritas Grande",
+        description: "Porción grande de papas fritas caseras",
+        price: 10000,
+        category: "acompañamientos",
+        imageUrl: "/api/placeholder/300/200"
+      },
+      // Bebidas
+      {
+        name: "Coca Personal",
+        description: "Coca Cola 350ml",
+        price: 4000,
+        category: "bebidas",
+        imageUrl: "/api/placeholder/300/200"
+      },
+      {
+        name: "Coca de Medio",
+        description: "Coca Cola 500ml",
+        price: 6000,
+        category: "bebidas",
+        imageUrl: "/api/placeholder/300/200"
+      }
+    ];
+
+    await db.insert(menuItems).values(items);
+  }
+}
+
+export const storage = new DatabaseStorage();
+```
+
+## INSTALACIÓN Y USO
+
+### Requisitos:
+- Node.js 18 o superior
+- Base de datos PostgreSQL (se configura automáticamente en Replit)
+
+### Instalación:
+1. Ejecutar `npm install` para instalar dependencias
+2. Ejecutar `npm run db:push` para inicializar la base de datos
+3. Ejecutar `npm run dev` para iniciar el servidor
+
+### Características:
+- ✅ Sistema de pedidos móvil optimizado
+- ✅ Carrito de compras funcional
+- ✅ Delivery opcional con mapa interactivo
+- ✅ Detección automática de ubicación
+- ✅ Integración con WhatsApp (número: 595972157725)
+- ✅ Base de datos PostgreSQL
+- ✅ Imágenes reales de productos
+- ✅ Interfaz en español para Paraguay
+
+### Contacto WhatsApp:
+El sistema está configurado para enviar pedidos al número **0972157725** (formato internacional: 595972157725)
+
+¡El sistema está listo para usar! 🍔🔥
